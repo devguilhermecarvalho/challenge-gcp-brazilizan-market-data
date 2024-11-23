@@ -1,0 +1,334 @@
+Este projeto está sendo feito com astronomer airflow cosmos e gcp. Completo os arquivos em branco, centralize as configurações possíveis no kaggle.yml. Faça com que a extração que é feita seja salva somente no dentro do bucker da landing_zone. Adeque as verificações, faça melhorias e utilize também o astronomer cosmos.
+
+# dags/main.py
+from pendulum import datetime
+
+from airflow.decorators import dag, task
+from airflow.models import Variable
+from airflow.operators.empty import EmptyOperator
+
+from cosmos import DbtTaskGroup, ProfileConfig, ProjectConfig, RenderConfig
+
+from requests
+
+# Parameters of the DAG
+@dag(
+    start_date=datetime(2024, 11, 11),
+    schedule="@daily",
+    catchup=False,
+    doc_md=__doc__,
+    default_args={"owner": "Astro", "retries": 1},
+    tags=["example"]
+)
+
+def pipeline_kaggle_extractor():
+    pass
+
+# dags/src/factory.py
+
+# dags/src/validators/bigquery_validator.py
+from google.cloud import bigquery
+from dags.src.validators.validators_config_loader import ConfigLoader
+import os
+
+class BigQueryManager:
+    def __init__(self, config_path="google_cloud.yml"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
+
+        self.config_loader = ConfigLoader(config_path)
+        self.client = bigquery.Client(project='challenge-kaggle-brmarket')
+        self.default_parameters = self.config_loader.get_default_parameters()
+        # Acessa bigquery no nível raiz
+        self.bigquery_config = self.config_loader.config.get("bigquery", {})
+
+    def setup_datasets(self):
+        """Configura datasets no BigQuery com base nas configurações do YAML."""
+        datasets_config = self.bigquery_config.get("datasets", [])
+        for dataset_config in datasets_config:
+            dataset_name = dataset_config["name"]
+            dataset_options = dataset_config.get("options", {})
+            dataset_tags = self._merge_tags(
+                dataset_options.get("tags", {}),
+                self.default_parameters.get("tags", {})
+            )
+
+            self._create_or_update_dataset(dataset_name, dataset_options, dataset_tags)
+
+    def _create_or_update_dataset(self, dataset_name, dataset_options, dataset_tags):
+        """Cria ou atualiza o dataset com as configurações fornecidas."""
+        dataset_id = f"{self.client.project}.{dataset_name}"
+        dataset = bigquery.Dataset(dataset_id)
+
+        # Configuração do dataset
+        dataset.location = dataset_options.get("region", self.default_parameters.get("region", "US"))
+        dataset.description = dataset_options.get("description", "Dataset criado automaticamente.")
+        dataset.labels = dataset_tags
+
+        try:
+            # Tenta criar o dataset
+            dataset = self.client.create_dataset(dataset, exists_ok=True)
+            print(f"Dataset '{dataset_id}' criado ou atualizado com sucesso.")
+        except Exception as e:
+            print(f"Erro ao criar ou atualizar o dataset '{dataset_id}': {e}")
+
+    def _merge_tags(self, dataset_tags, default_tags):
+        """Mescla as tags do dataset com as tags padrão."""
+        merged_tags = default_tags.copy()
+        merged_tags.update(dataset_tags)
+        return merged_tags
+
+# Uso do gerenciador de datasets
+if __name__ == "__main__":
+    manager = BigQueryManager()
+    manager.setup_datasets()
+
+# dags/src/validators/cloud_storage_validator.py
+from google.cloud import storage
+from dags.src.validators.validators_config_loader import ConfigLoader
+import os
+
+class CloudStorageValidator:
+    def __init__(self, config_path="google_cloud.yml"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
+
+        self.config_loader = ConfigLoader(config_path)
+        self.client = storage.Client()
+        self.default_parameters = self.config_loader.get_default_parameters()
+        self.buckets_config = self.config_loader.get_bucket_configs()
+
+    def validate_or_create_buckets_and_tags(self):
+        """Valida, cria e aplica configurações de buckets e tags."""
+        for bucket_config in self.buckets_config:
+            bucket_name = bucket_config["name"]
+            bucket_options = bucket_config.get("options", {})
+            folders = bucket_config.get("folders", [])
+            bucket_tags = self._merge_tags(bucket_options.get("tags", {}), self.default_parameters.get("tags", {}))
+
+            bucket = self._get_or_create_bucket(bucket_name, bucket_options)
+            self._validate_and_apply_tags(bucket, bucket_tags)
+            self._create_folders(bucket, folders)
+
+    def _get_or_create_bucket(self, bucket_name, bucket_options):
+        """Obtém o bucket se ele existir ou cria um novo com as configurações fornecidas."""
+        try:
+            bucket = self.client.get_bucket(bucket_name)
+            print(f"Bucket '{bucket_name}' encontrado.")
+        except Exception:
+            print(f"Bucket '{bucket_name}' não encontrado. Criando...")
+            bucket = self.client.bucket(bucket_name)
+
+            # Configuração do bucket
+            bucket.location = bucket_options.get("region", self.default_parameters.get("region"))
+            bucket.storage_class = bucket_options.get("storage_class", self.default_parameters.get("storage_class"))
+            bucket.versioning_enabled = bucket_options.get("versioning", self.default_parameters.get("versioning"))
+
+            # Criação do bucket
+            bucket = self.client.create_bucket(bucket)
+            print(f"Bucket '{bucket_name}' criado com sucesso.")
+
+        return bucket
+
+    def _merge_tags(self, bucket_tags, default_tags):
+        """Mescla as tags do bucket com as tags padrão."""
+        merged_tags = default_tags.copy()
+        merged_tags.update(bucket_tags)
+        return merged_tags
+
+    def _validate_and_apply_tags(self, bucket, tags):
+        """Valida e aplica as tags no bucket."""
+        existing_tags = bucket.labels
+
+        if existing_tags != tags:
+            bucket.labels = tags
+            bucket.patch()  # Aplica as mudanças no bucket
+            print(f"Tags atualizadas no bucket '{bucket.name}': {tags}")
+        else:
+            print(f"As tags no bucket '{bucket.name}' já estão atualizadas.")
+
+    def _create_folders(self, bucket, folders):
+        """Cria folders simulados no bucket."""
+        for folder_name in folders:
+            blob = bucket.blob(f"{folder_name}/")  # Simula uma pasta
+            if not blob.exists():
+                blob.upload_from_string("")  # Cria um blob vazio como marcador
+                print(f"Folder '{folder_name}' criado em '{bucket.name}'.")
+            else:
+                print(f"Folder '{folder_name}' já existe em '{bucket.name}'.")
+
+# Uso do validador
+validator = CloudStorageValidator()
+validator.validate_or_create_buckets_and_tags()
+
+# dags/src/validators/validators_config_loader.py
+import yaml
+
+class ConfigLoader:
+    def __init__(self, config_path="google_cloud.yml"):
+        self.config_path = config_path
+        self.config = self._load_config()
+
+    def _load_config(self):
+        """Carrega o arquivo de configuração YAML."""
+        with open(self.config_path, 'r') as file:
+            config = yaml.safe_load(file)
+        return config
+
+    def get_default_parameters(self):
+        """Retorna os parâmetros padrão."""
+        return self.config.get("default_parameters", {})
+
+    def get_gcp_configs(self):
+        """Retorna as configurações específicas do GCP."""
+        return self.config.get("gcp_configs", {})
+
+    def get_bucket_configs(self):
+        """Retorna as configurações dos buckets."""
+        gcp_configs = self.get_gcp_configs()
+        return gcp_configs.get("cloud_storage", {}).get("buckets", [])
+
+# dags/src/taskgroups/validator_task_group.py
+
+# dags/src/endpoints/kaggle_extractor.py
+import os
+import requests
+import json
+from kaggle.api.kaggle_api_extended import KaggleApi
+from datetime import datetime
+
+class KaggleDatasetDownloader:
+    def __init__(self, kaggle_json_path='kaggle.json'):
+        # Carregar as credenciais do Kaggle a partir do arquivo JSON
+        with open(kaggle_json_path, 'r') as file:
+            self.kaggle_credentials = json.load(file)
+        self.username = self.kaggle_credentials['username']
+        self.key = self.kaggle_credentials['key']
+        
+        # Inicializar a API do Kaggle
+        self.api = KaggleApi()
+        self.api.authenticate()
+    
+    def get_dataset_metadata(self, dataset_id):
+        # Configurar a URL do metadado do dataset
+        metadata_url = f'https://www.kaggle.com/api/v1/datasets/view/{dataset_id}'
+        # Fazer a requisição para obter metadados do dataset
+        response = requests.get(metadata_url, auth=(self.username, self.key))
+        # Verificar se a requisição foi bem-sucedida
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Erro ao obter metadados para {dataset_id}: {response.status_code} - {response.text}")
+            return None
+    
+    def download_dataset(self, dataset_id, base_folder):
+        # Baixar o dataset
+        self.api.dataset_download_files(dataset_id, path=base_folder, unzip=True)
+    
+    def verify_download(self, expected_size, base_folder):
+        # Verificar o tamanho dos arquivos baixados
+        downloaded_file_size = sum(
+            os.path.getsize(os.path.join(base_folder, f)) for f in os.listdir(base_folder)
+        )
+        print("Tamanho esperado (em bytes):", expected_size)
+        print("Tamanho do arquivo baixado (em bytes):", downloaded_file_size)
+        
+        # Comparar tamanhos e exibir o resultado
+        if downloaded_file_size == expected_size:
+            print("Download completo: o tamanho dos arquivos baixados corresponde ao tamanho esperado.")
+        else:
+            print("Aviso: o tamanho dos arquivos baixados não corresponde ao tamanho esperado.")
+    
+    def rename_main_file(self, base_folder, update_date, dataset_name):
+        # Nomear o arquivo principal com a data da última atualização
+        main_file_name = f'{dataset_name}_{update_date}.csv'
+        main_file_path = os.path.join(base_folder, main_file_name)
+        
+        # Salvar um dos arquivos baixados como exemplo
+        csv_files = [file for file in os.listdir(base_folder) if file.endswith(".csv")]
+        if csv_files:
+            os.rename(os.path.join(base_folder, csv_files[0]), main_file_path)
+            print(f"Dataset salvo em: {main_file_path}")
+        else:
+            print("Nenhum arquivo CSV encontrado para renomear.")
+    
+    def process_dataset(self, dataset_id):
+        metadata = self.get_dataset_metadata(dataset_id)
+        if not metadata:
+            return
+        
+        # Obter informações de interesse
+        title = metadata['title']
+        description = metadata['subtitle']
+        last_updated = metadata['lastUpdated']
+        expected_size = metadata['totalBytes']
+        
+        # Converter a data de última atualização para um formato utilizável
+        update_date = datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%Y-%m-%d')
+    
+        # Configurar as pastas e arquivos com base na data de atualização
+        dataset_name = dataset_id.split('/')[-1]
+        base_folder = f'../data/{dataset_name}_{update_date}'
+        os.makedirs(base_folder, exist_ok=True)
+        
+        # Baixar o dataset
+        self.download_dataset(dataset_id, base_folder)
+        
+        # Verificar o download
+        self.verify_download(expected_size, base_folder)
+        
+        # Renomear o arquivo principal
+        self.rename_main_file(base_folder, update_date, dataset_name)
+
+if __name__ == "__main__":
+    dataset_ids = ['olistbr/marketing-funnel-olist', 'olistbr/brazilian-ecommerce']
+    downloader = KaggleDatasetDownloader()
+    for dataset_id in dataset_ids:
+        downloader.process_dataset(dataset_id)
+
+# dags/src/configs/google_cloud.yml
+default_parameters: &defaults
+  region: southamerica-east1 
+  storage_class: standard
+  versioning: False
+  tags:
+    owner: team-data
+    environment: production
+    user: guilhermecarvalho
+
+gcp_configs:
+  cloud_storage:
+    buckets:
+      - name: kaggle_landing_zone
+        folders:
+          - bronze
+          - silver
+          - gold
+        options:
+          <<: *defaults
+          tags:
+            project: kaggle-landing
+
+      - name: analytics_gold_zone
+        folders:
+          - analytics_bronze
+        options:
+          <<: *defaults
+          tags:
+            project: analytics-gold
+
+bigquery:
+    datasets:
+      - name: kaggle_data
+        options:
+          <<: *defaults
+          description: "Dataset para dados do Kaggle."
+          tags:
+            project: kaggle-analysis
+
+      - name: analytics_data
+        options:
+          <<: *defaults
+          description: "Dataset para análises avançadas."
+          tags:
+            project: analytics
+
+# dags/src/configs/kaggle.yml    

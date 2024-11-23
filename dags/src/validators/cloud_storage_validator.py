@@ -3,7 +3,7 @@ from dags.src.validators.validators_config_loader import ConfigLoader
 import os
 
 class CloudStorageValidator:
-    def __init__(self, config_path="google_cloud.yml"):
+    def __init__(self, config_path="configs/google_cloud.yml"):
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
 
         self.config_loader = ConfigLoader(config_path)
@@ -12,7 +12,7 @@ class CloudStorageValidator:
         self.buckets_config = self.config_loader.get_bucket_configs()
 
     def validate_or_create_buckets_and_tags(self):
-        """Valida, cria e aplica configurações de buckets e tags."""
+        """Validate, create, and apply bucket configurations and tags."""
         for bucket_config in self.buckets_config:
             bucket_name = bucket_config["name"]
             bucket_options = bucket_config.get("options", {})
@@ -24,52 +24,48 @@ class CloudStorageValidator:
             self._create_folders(bucket, folders)
 
     def _get_or_create_bucket(self, bucket_name, bucket_options):
-        """Obtém o bucket se ele existir ou cria um novo com as configurações fornecidas."""
+        """Get the bucket if it exists or create a new one with the provided configurations."""
         try:
             bucket = self.client.get_bucket(bucket_name)
-            print(f"Bucket '{bucket_name}' encontrado.")
+            print(f"Bucket '{bucket_name}' found.")
         except Exception:
-            print(f"Bucket '{bucket_name}' não encontrado. Criando...")
+            print(f"Bucket '{bucket_name}' not found. Creating...")
             bucket = self.client.bucket(bucket_name)
 
-            # Configuração do bucket
+            # Bucket configuration
             bucket.location = bucket_options.get("region", self.default_parameters.get("region"))
             bucket.storage_class = bucket_options.get("storage_class", self.default_parameters.get("storage_class"))
             bucket.versioning_enabled = bucket_options.get("versioning", self.default_parameters.get("versioning"))
 
-            # Criação do bucket
+            # Create the bucket
             bucket = self.client.create_bucket(bucket)
-            print(f"Bucket '{bucket_name}' criado com sucesso.")
+            print(f"Bucket '{bucket_name}' created successfully.")
 
         return bucket
 
     def _merge_tags(self, bucket_tags, default_tags):
-        """Mescla as tags do bucket com as tags padrão."""
+        """Merge bucket tags with default tags."""
         merged_tags = default_tags.copy()
         merged_tags.update(bucket_tags)
         return merged_tags
 
     def _validate_and_apply_tags(self, bucket, tags):
-        """Valida e aplica as tags no bucket."""
+        """Validate and apply tags to the bucket."""
         existing_tags = bucket.labels
 
         if existing_tags != tags:
             bucket.labels = tags
-            bucket.patch()  # Aplica as mudanças no bucket
-            print(f"Tags atualizadas no bucket '{bucket.name}': {tags}")
+            bucket.patch()  # Apply changes to the bucket
+            print(f"Tags updated on bucket '{bucket.name}': {tags}")
         else:
-            print(f"As tags no bucket '{bucket.name}' já estão atualizadas.")
+            print(f"Tags on bucket '{bucket.name}' are already up-to-date.")
 
     def _create_folders(self, bucket, folders):
-        """Cria folders simulados no bucket."""
+        """Create simulated folders in the bucket."""
         for folder_name in folders:
-            blob = bucket.blob(f"{folder_name}/")  # Simula uma pasta
+            blob = bucket.blob(f"{folder_name}/")  # Simulate a folder
             if not blob.exists():
-                blob.upload_from_string("")  # Cria um blob vazio como marcador
-                print(f"Folder '{folder_name}' criado em '{bucket.name}'.")
+                blob.upload_from_string("")  # Create an empty blob as a marker
+                print(f"Folder '{folder_name}' created in '{bucket.name}'.")
             else:
-                print(f"Folder '{folder_name}' já existe em '{bucket.name}'.")
-
-# Uso do validador
-validator = CloudStorageValidator()
-validator.validate_or_create_buckets_and_tags()
+                print(f"Folder '{folder_name}' already exists in '{bucket.name}'.")

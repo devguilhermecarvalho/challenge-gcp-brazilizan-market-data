@@ -11,8 +11,6 @@ __pycache__/
 tests/google_cloud.json
 tests/kaggle.json
 
-tests/
-
 # Distribution / packaging
 .Python
 build/

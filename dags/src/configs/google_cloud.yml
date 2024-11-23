@@ -1,5 +1,5 @@
 default_parameters: &defaults
-  region: southamerica-east1 
+  region: southamerica-east1
   storage_class: standard
   versioning: False
   tags:
@@ -29,17 +29,17 @@ gcp_configs:
             project: analytics-gold
 
 bigquery:
-    datasets:
-      - name: kaggle_data
-        options:
-          <<: *defaults
-          description: "Dataset para dados do Kaggle."
-          tags:
-            project: kaggle-analysis
+  datasets:
+    - name: kaggle_data
+      options:
+        <<: *defaults
+        description: "Dataset for Kaggle data."
+        tags:
+          project: kaggle-analysis
 
-      - name: analytics_data
-        options:
-          <<: *defaults
-          description: "Dataset para análises avançadas."
-          tags:
-            project: analytics
+    - name: analytics_data
+      options:
+        <<: *defaults
+        description: "Dataset for advanced analytics."
+        tags:
+          project: analytics

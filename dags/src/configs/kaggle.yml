@@ -1,0 +1,6 @@
+kaggle:
+  datasets:
+    - id: 'olistbr/marketing-funnel-olist'
+    - id: 'olistbr/brazilian-ecommerce'
+  bucket_name: 'kaggle_landing_zone'
+  folder: 'bronze'
