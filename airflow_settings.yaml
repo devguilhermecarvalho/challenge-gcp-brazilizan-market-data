@@ -23,3 +23,11 @@ airflow:
   variables:
     - variable_name:
       variable_value:
+  env:
+    - env_name: GOOGLE_APPLICATION_CREDENTIALS
+      env_value: /app/credentials/google/credentials.json
+  mount:
+    - source: /home/guilherme-carvalho/credentials/google/google_cloud.json
+      target: /app/credentials/google/credentials.json
+    - source: /home/guilherme-carvalho/credentials/kaggle/kaggle.json
+      target: /app/credentials/kaggle/kaggle.json

@@ -1,12 +1,8 @@
 # Astro Runtime includes the following pre-installed providers packages: https://www.astronomer.io/docs/astro/runtime-image-architecture#provider-packages
-apache-airflow
-google-cloud-storage
-google-cloud-bigquery
-astronomer-cosmos
-kaggle
-kagglehub
-pyyaml
-astronomer-cosmos[dbt]
-dbt-core
-dbt-bigquery
-pendulum
+astronomer-cosmos==1.7.1
+kaggle==1.6.17
+kagglehub==0.3.4
+pyyaml==6.0.2
+dbt-core==1.5.2
+dbt-bigquery==1.5.2
+astro-run-dag==0.2.7
