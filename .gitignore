@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+.credentials/
+credentials/
+google_cloud.json
+kaggle.json
+
+
 # Distribution / packaging
 .Python
 build/

@@ -1,0 +1,9 @@
+dbt_transformations:
+  target: prod
+  outputs:
+    prod:
+      type: bigquery
+      method: service-account
+      project: challenge-kaggle-brmarket"
+      dataset: db_dbt_transformations
+      threads: 4

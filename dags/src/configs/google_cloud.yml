@@ -1,0 +1,45 @@
+default_parameters: &defaults
+  region: southamerica-east1
+  storage_class: standard
+  versioning: False
+  tags:
+    owner: team-data
+    environment: production
+    user: guilhermecarvalho
+
+gcp_configs:
+  cloud_storage:
+    buckets:
+      - name: kaggle_landing_zone
+        folders:
+          - bronze
+          - silver
+          - gold
+        options:
+          <<: *defaults
+          tags:
+            project: kaggle-landing
+
+      - name: analytics_gold_zone
+        folders:
+          - analytics_bronze
+        options:
+          <<: *defaults
+          tags:
+            project: analytics-gold
+
+bigquery:
+  datasets:
+    - name: kaggle_data
+      options:
+        <<: *defaults
+        description: "Dataset for Kaggle data."
+        tags:
+          project: kaggle-analysis
+
+    - name: analytics_data
+      options:
+        <<: *defaults
+        description: "Dataset for advanced analytics."
+        tags:
+          project: analytics

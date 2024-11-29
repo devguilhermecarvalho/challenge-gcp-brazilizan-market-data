@@ -1,0 +1,554 @@
+# Dockerfile
+FROM quay.io/astronomer/astro-runtime:12.4.0
+
+# requirements.txt
+astronomer-cosmos==1.7.1
+kaggle==1.6.17
+kagglehub==0.3.4
+pyyaml==6.0.2
+dbt-core==1.5.2
+dbt-bigquery==1.5.2
+astro-run-dag==0.2.7
+
+# airflow_settings.yaml
+airflow:
+  connections:
+    - conn_id:
+      conn_type:
+      conn_host:
+      conn_schema:
+      conn_login:
+      conn_password:
+      conn_port:
+      conn_extra:
+        example_extra_field: example-value
+  pools:
+    - pool_name:
+      pool_slot:
+      pool_description:
+  variables:
+    - variable_name:
+      variable_value:
+  env:
+    - env_name: GOOGLE_APPLICATION_CREDENTIALS
+      env_value: /app/credentials/google/credentials.json
+  mount:
+    - source: /home/guilherme-carvalho/credentials/google/google_cloud.json
+      target: /app/credentials/google/credentials.json
+    - source: /home/guilherme-carvalho/credentials/kaggle/kaggle.json
+      target: /app/credentials/kaggle/kaggle.json
+
+# dags/main.py
+from pendulum import datetime
+
+from airflow.decorators import dag, task
+from airflow.models import Variable
+from airflow.utils.task_group import TaskGroup
+
+from cosmos import DbtTaskGroup, ProfileConfig, ProjectConfig, RenderConfig
+
+from src.validators.bigquery_validator import BigQueryManager
+from src.validators.cloud_storage_validator import CloudStorageValidator
+from src.endpoints.kaggle_extractor import KaggleDatasetDownloader
+from src.validators.validators_config_loader import ConfigLoader
+
+# Parameters of the DAG
+@dag(
+    start_date=datetime(2024, 11, 11),
+    schedule="@daily",
+    catchup=False,
+    doc_md=__doc__,
+    default_args={"owner": "Astro", "retries": 1},
+    tags=["example"]
+)
+def pipeline_kaggle_extractor():
+    @task
+    def validate_buckets_and_datasets():
+        # Validate or create GCP buckets and datasets
+        cloud_storage_validator = CloudStorageValidator(config_path="configs/google_cloud.yml")
+        cloud_storage_validator.validate_or_create_buckets_and_tags()
+
+        bigquery_manager = BigQueryManager(config_path="configs/google_cloud.yml")
+        bigquery_manager.setup_datasets()
+
+    @task
+    def extract_kaggle_datasets():
+        config_loader = ConfigLoader(config_path="configs/kaggle.yml")
+        kaggle_configs = config_loader.get_kaggle_configs()
+        dataset_ids = [dataset['id'] for dataset in kaggle_configs.get('datasets', [])]
+        downloader = KaggleDatasetDownloader(kaggle_json_path='kaggle.json', config=kaggle_configs)
+        for dataset_id in dataset_ids:
+            downloader.process_dataset(dataset_id)
+
+    # Define the validator task group
+    with TaskGroup("validators", tooltip="Validator Tasks") as validate_group:
+        validate_buckets_and_datasets()
+
+    # Define the dbt task group using Astronomer Cosmos
+    dbt_tg = DbtTaskGroup(
+        group_id='dbt_transformations',
+        project_config=ProjectConfig(
+            dbt_project_name='dbt_transformations',
+            project_dir='/dbt_transformations',
+            profiles_dir='/dbt_transformations',
+            profile_name='default',
+            target_name='prod',
+        ),
+        # Adjust the select parameter as needed
+        select='state:modified+',
+    )
+
+    # Set task dependencies
+    validate_group >> extract_kaggle_datasets() >> dbt_tg
+
+pipeline_kaggle_extractor()
+
+# dags/dbt_transformations
+
+# dags/src/factory.py
+class ServiceFactory:
+    """Factory class to create instances of services like validators and extractors."""
+
+    @staticmethod
+    def create_bigquery_manager(config_path="configs/google_cloud.yml"):
+        from src.validators.bigquery_validator import BigQueryManager
+        return BigQueryManager(config_path)
+
+    @staticmethod
+    def create_cloud_storage_validator(config_path="configs/google_cloud.yml"):
+        from src.validators.cloud_storage_validator import CloudStorageValidator
+        return CloudStorageValidator(config_path)
+
+    @staticmethod
+    def create_kaggle_downloader(config_path="configs/kaggle.yml", kaggle_json_path='kaggle.json'):
+        from src.endpoints.kaggle_extractor import KaggleDatasetDownloader
+        from src.validators.validators_config_loader import ConfigLoader
+        config_loader = ConfigLoader(config_path)
+        kaggle_configs = config_loader.get_kaggle_configs()
+        return KaggleDatasetDownloader(kaggle_json_path, config=kaggle_configs)
+
+# dags/src/validators/bigquery_validator.py
+from google.cloud import bigquery
+from dags.src.validators.validators_config_loader import ConfigLoader
+import os
+
+class BigQueryManager:
+    def __init__(self, config_path="configs/google_cloud.yml"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
+
+        self.config_loader = ConfigLoader(config_path)
+        self.client = bigquery.Client()
+        self.default_parameters = self.config_loader.get_default_parameters()
+        # Access bigquery at the root level
+        self.bigquery_config = self.config_loader.config.get("bigquery", {})
+
+    def setup_datasets(self):
+        """Set up datasets in BigQuery based on YAML configurations."""
+        datasets_config = self.bigquery_config.get("datasets", [])
+        for dataset_config in datasets_config:
+            dataset_name = dataset_config["name"]
+            dataset_options = dataset_config.get("options", {})
+            dataset_tags = self._merge_tags(
+                dataset_options.get("tags", {}),
+                self.default_parameters.get("tags", {})
+            )
+
+            self._create_or_update_dataset(dataset_name, dataset_options, dataset_tags)
+
+    def _create_or_update_dataset(self, dataset_name, dataset_options, dataset_tags):
+        """Create or update the dataset with the provided configurations."""
+        dataset_id = f"{self.client.project}.{dataset_name}"
+        dataset = bigquery.Dataset(dataset_id)
+
+        # Dataset configuration
+        dataset.location = dataset_options.get("region", self.default_parameters.get("region", "US"))
+        dataset.description = dataset_options.get("description", "Dataset created automatically.")
+        dataset.labels = dataset_tags
+
+        try:
+            # Try to create the dataset
+            dataset = self.client.create_dataset(dataset, exists_ok=True)
+            print(f"Dataset '{dataset_id}' created or updated successfully.")
+        except Exception as e:
+            print(f"Error creating or updating dataset '{dataset_id}': {e}")
+
+    def _merge_tags(self, dataset_tags, default_tags):
+        """Merge dataset tags with default tags."""
+        merged_tags = default_tags.copy()
+        merged_tags.update(dataset_tags)
+        return merged_tags
+
+# dags/src/validators/cloud_storage_validator.py
+from google.cloud import storage
+from dags.src.validators.validators_config_loader import ConfigLoader
+import os
+
+class CloudStorageValidator:
+    def __init__(self, config_path="configs/google_cloud.yml"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
+
+        self.config_loader = ConfigLoader(config_path)
+        self.client = storage.Client()
+        self.default_parameters = self.config_loader.get_default_parameters()
+        self.buckets_config = self.config_loader.get_bucket_configs()
+
+    def validate_or_create_buckets_and_tags(self):
+        """Validate, create, and apply bucket configurations and tags."""
+        for bucket_config in self.buckets_config:
+            bucket_name = bucket_config["name"]
+            bucket_options = bucket_config.get("options", {})
+            folders = bucket_config.get("folders", [])
+            bucket_tags = self._merge_tags(bucket_options.get("tags", {}), self.default_parameters.get("tags", {}))
+
+            bucket = self._get_or_create_bucket(bucket_name, bucket_options)
+            self._validate_and_apply_tags(bucket, bucket_tags)
+            self._create_folders(bucket, folders)
+
+    def _get_or_create_bucket(self, bucket_name, bucket_options):
+        """Get the bucket if it exists or create a new one with the provided configurations."""
+        try:
+            bucket = self.client.get_bucket(bucket_name)
+            print(f"Bucket '{bucket_name}' found.")
+        except Exception:
+            print(f"Bucket '{bucket_name}' not found. Creating...")
+            bucket = self.client.bucket(bucket_name)
+
+            # Bucket configuration
+            bucket.location = bucket_options.get("region", self.default_parameters.get("region"))
+            bucket.storage_class = bucket_options.get("storage_class", self.default_parameters.get("storage_class"))
+            bucket.versioning_enabled = bucket_options.get("versioning", self.default_parameters.get("versioning"))
+
+            # Create the bucket
+            bucket = self.client.create_bucket(bucket)
+            print(f"Bucket '{bucket_name}' created successfully.")
+
+        return bucket
+
+    def _merge_tags(self, bucket_tags, default_tags):
+        """Merge bucket tags with default tags."""
+        merged_tags = default_tags.copy()
+        merged_tags.update(bucket_tags)
+        return merged_tags
+
+    def _validate_and_apply_tags(self, bucket, tags):
+        """Validate and apply tags to the bucket."""
+        existing_tags = bucket.labels
+
+        if existing_tags != tags:
+            bucket.labels = tags
+            bucket.patch()  # Apply changes to the bucket
+            print(f"Tags updated on bucket '{bucket.name}': {tags}")
+        else:
+            print(f"Tags on bucket '{bucket.name}' are already up-to-date.")
+
+    def _create_folders(self, bucket, folders):
+        """Create simulated folders in the bucket."""
+        for folder_name in folders:
+            blob = bucket.blob(f"{folder_name}/")  # Simulate a folder
+            if not blob.exists():
+                blob.upload_from_string("")  # Create an empty blob as a marker
+                print(f"Folder '{folder_name}' created in '{bucket.name}'.")
+            else:
+                print(f"Folder '{folder_name}' already exists in '{bucket.name}'.")
+
+# dags/src/validators/validators_config_loader.py
+import yaml
+
+class ConfigLoader:
+    def __init__(self, config_path="configs/google_cloud.yml"):
+        self.config_path = config_path
+        self.config = self._load_config()
+
+    def _load_config(self):
+        """Load the YAML configuration file."""
+        with open(self.config_path, 'r') as file:
+            config = yaml.safe_load(file)
+        return config
+
+    def get_default_parameters(self):
+        """Return default parameters."""
+        return self.config.get("default_parameters", {})
+
+    def get_gcp_configs(self):
+        """Return GCP-specific configurations."""
+        return self.config.get("gcp_configs", {})
+
+    def get_bucket_configs(self):
+        """Return bucket configurations."""
+        gcp_configs = self.get_gcp_configs()
+        return gcp_configs.get("cloud_storage", {}).get("buckets", [])
+
+    def get_kaggle_configs(self):
+        """Return Kaggle-specific configurations."""
+        return self.config.get("kaggle", {})
+
+
+from airflow.utils.task_group import TaskGroup
+from airflow.decorators import task
+
+from src.validators.bigquery_validator import BigQueryManager
+from src.validators.cloud_storage_validator import CloudStorageValidator
+
+def validator_task_group():
+    with TaskGroup("validators", tooltip="Validator Tasks") as group:
+        @task
+        def validate_buckets_and_datasets():
+            # Validate or create GCP buckets and datasets
+            cloud_storage_validator = CloudStorageValidator(config_path="configs/google_cloud.yml")
+            cloud_storage_validator.validate_or_create_buckets_and_tags()
+
+            bigquery_manager = BigQueryManager(config_path="configs/google_cloud.yml")
+            bigquery_manager.setup_datasets()
+
+        validate_buckets_and_datasets()
+
+    return group
+
+# dags/src/taskgroups/validators_task_group.py
+from airflow.utils.task_group import TaskGroup
+from airflow.decorators import task
+
+from src.validators.bigquery_validator import BigQueryManager
+from src.validators.cloud_storage_validator import CloudStorageValidator
+
+def validator_task_group():
+    with TaskGroup("validators", tooltip="Validator Tasks") as group:
+        @task
+        def validate_buckets_and_datasets():
+            # Validate or create GCP buckets and datasets
+            cloud_storage_validator = CloudStorageValidator(config_path="configs/google_cloud.yml")
+            cloud_storage_validator.validate_or_create_buckets_and_tags()
+
+            bigquery_manager = BigQueryManager(config_path="configs/google_cloud.yml")
+            bigquery_manager.setup_datasets()
+
+        validate_buckets_and_datasets()
+
+    return group
+
+# dags/src/endpoints/kaggle_extractor.py
+import os
+import requests
+import json
+from kaggle.api.kaggle_api_extended import KaggleApi
+from datetime import datetime
+from google.cloud import storage
+
+class KaggleDatasetDownloader:
+    def __init__(self, kaggle_json_path='kaggle.json', config=None):
+        # Load Kaggle credentials from the JSON file
+        with open(kaggle_json_path, 'r') as file:
+            self.kaggle_credentials = json.load(file)
+        self.username = self.kaggle_credentials['username']
+        self.key = self.kaggle_credentials['key']
+        
+        # Initialize the Kaggle API
+        self.api = KaggleApi()
+        self.api.authenticate()
+
+        # GCS Client
+        self.storage_client = storage.Client()
+
+        # Configurations
+        self.config = config or {}
+        self.bucket_name = self.config.get('kaggle', {}).get('bucket_name', 'kaggle_landing_zone')
+        self.folder = self.config.get('kaggle', {}).get('folder', 'bronze')
+    
+    def get_dataset_metadata(self, dataset_id):
+        # Configure the dataset metadata URL
+        metadata_url = f'https://www.kaggle.com/api/v1/datasets/view/{dataset_id}'
+        # Make the request to get dataset metadata
+        response = requests.get(metadata_url, auth=(self.username, self.key))
+        # Check if the request was successful
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Error getting metadata for {dataset_id}: {response.status_code} - {response.text}")
+            return None
+    
+    def download_dataset(self, dataset_id, base_folder):
+        # Download the dataset
+        self.api.dataset_download_files(dataset_id, path=base_folder, unzip=True)
+    
+    def verify_download(self, expected_size, base_folder):
+        # Verify the size of the downloaded files
+        downloaded_file_size = sum(
+            os.path.getsize(os.path.join(base_folder, f)) for f in os.listdir(base_folder)
+        )
+        print("Expected size (in bytes):", expected_size)
+        print("Downloaded file size (in bytes):", downloaded_file_size)
+        
+        # Compare sizes and display the result
+        if downloaded_file_size == expected_size:
+            print("Download complete: the size of downloaded files matches the expected size.")
+        else:
+            print("Warning: the size of downloaded files does not match the expected size.")
+    
+    def upload_to_gcs(self, local_file_path, gcs_blob_name):
+        bucket = self.storage_client.bucket(self.bucket_name)
+        blob = bucket.blob(gcs_blob_name)
+        blob.upload_from_filename(local_file_path)
+        print(f"Uploaded {local_file_path} to gs://{self.bucket_name}/{gcs_blob_name}")
+    
+    def process_dataset(self, dataset_id):
+        metadata = self.get_dataset_metadata(dataset_id)
+        if not metadata:
+            return
+        
+        # Get relevant information
+        title = metadata['title']
+        description = metadata['subtitle']
+        last_updated = metadata['lastUpdated']
+        expected_size = metadata['totalBytes']
+        
+        # Convert the last updated date to a usable format
+        update_date = datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%S.%fZ").strftime('%Y-%m-%d')
+    
+        # Configure folders and files based on the update date
+        dataset_name = dataset_id.split('/')[-1]
+        base_folder = f'/tmp/{dataset_name}_{update_date}'
+        os.makedirs(base_folder, exist_ok=True)
+        
+        # Download the dataset
+        self.download_dataset(dataset_id, base_folder)
+        
+        # Verify the download
+        self.verify_download(expected_size, base_folder)
+        
+        # Rename the main file
+        self.rename_main_file(base_folder, update_date, dataset_name)
+
+        # Upload files to GCS
+        self.upload_files_to_gcs(base_folder, dataset_name, update_date)
+
+        # Clean up local files
+        self.cleanup_local_files(base_folder)
+    
+    def rename_main_file(self, base_folder, update_date, dataset_name):
+        # Rename the main file with the last update date
+        main_file_name = f'{dataset_name}_{update_date}.csv'
+        main_file_path = os.path.join(base_folder, main_file_name)
+        
+        # Save one of the downloaded files as an example
+        csv_files = [file for file in os.listdir(base_folder) if file.endswith(".csv")]
+        if csv_files:
+            os.rename(os.path.join(base_folder, csv_files[0]), main_file_path)
+            print(f"Dataset saved as: {main_file_path}")
+        else:
+            print("No CSV file found to rename.")
+    
+    def upload_files_to_gcs(self, base_folder, dataset_name, update_date):
+        # Upload all files in the base_folder to GCS
+        for filename in os.listdir(base_folder):
+            local_file_path = os.path.join(base_folder, filename)
+            gcs_blob_name = f"{self.folder}/{dataset_name}/{update_date}/{filename}"
+            self.upload_to_gcs(local_file_path, gcs_blob_name)
+    
+    def cleanup_local_files(self, base_folder):
+        # Remove local files after upload
+        for filename in os.listdir(base_folder):
+            os.remove(os.path.join(base_folder, filename))
+        os.rmdir(base_folder)
+
+# dags/src/configs/google_cloud.yml
+default_parameters: &defaults
+  region: southamerica-east1
+  storage_class: standard
+  versioning: False
+  tags:
+    owner: team-data
+    environment: production
+    user: guilhermecarvalho
+
+gcp_configs:
+  cloud_storage:
+    buckets:
+      - name: kaggle_landing_zone
+        folders:
+          - bronze
+          - silver
+          - gold
+        options:
+          <<: *defaults
+          tags:
+            project: kaggle-landing
+
+      - name: analytics_gold_zone
+        folders:
+          - analytics_bronze
+        options:
+          <<: *defaults
+          tags:
+            project: analytics-gold
+
+bigquery:
+  datasets:
+    - name: kaggle_data
+      options:
+        <<: *defaults
+        description: "Dataset for Kaggle data."
+        tags:
+          project: kaggle-analysis
+
+    - name: analytics_data
+      options:
+        <<: *defaults
+        description: "Dataset for advanced analytics."
+        tags:
+          project: analytics
+
+# kaggle.yml
+kaggle:
+  datasets:
+    - id: 'olistbr/marketing-funnel-olist'
+    - id: 'olistbr/brazilian-ecommerce'
+  bucket_name: 'kaggle_landing_zone'
+  folder: 'bronze'
+
+# dags/dbt_transformations/dbt_project.yml
+
+# Name your project! Project names should contain only lowercase characters
+# and underscores. A good package name should reflect your organization's
+# name or the intended use of these models
+name: 'dbt_transformations'
+version: '1.0.0'
+
+# This setting configures which "profile" dbt uses for this project.
+profile: 'dbt_transformations'
+
+# These configurations specify where dbt should look for different types of files.
+# The `model-paths` config, for example, states that models in this project can be
+# found in the "models/" directory. You probably won't need to change these!
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+clean-targets:         # directories to be removed by `dbt clean`
+  - "target"
+  - "dbt_packages"
+
+
+# Configuring models
+# Full documentation: https://docs.getdbt.com/docs/configuring-models
+
+# In this example config, we tell dbt to build all models in the example/
+# directory as views. These settings can be overridden in the individual model
+# files using the `{{ config(...) }}` macro.
+models:
+  dbt_transformations:
+    # Config indicated by + and applies to all files under models/example/
+    example:
+      +materialized: view
+
+Me ajude com as configurações do dbt pois estou recebendo o erro as fazer o astro dev start e retorne os códigos com as correções:
+Broken DAG: [/usr/local/airflow/dags/main.py]
+Traceback (most recent call last):
+  File "/usr/local/lib/python3.12/site-packages/airflow/models/dag.py", line 4307, in factory
+    f(**f_kwargs)
+  File "/usr/local/airflow/dags/main.py", line 49, in pipeline_kaggle_extractor
+    project_config=ProjectConfig(
+                   ^^^^^^^^^^^^^^
+TypeError: ProjectConfig.__init__() got an unexpected keyword argument 'dbt_project_name'

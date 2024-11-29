@@ -1,0 +1,26 @@
+airflow:
+  connections:
+    - conn_id:
+      conn_type:
+      conn_host:
+      conn_schema:
+      conn_login:
+      conn_password:
+      conn_port:
+      conn_extra:
+        example_extra_field: example-value
+  pools:
+    - pool_name:
+      pool_slot:
+      pool_description:
+  variables:
+    - variable_name:
+      variable_value:
+  env:
+    - env_name: GOOGLE_APPLICATION_CREDENTIALS
+      env_value: /app/credentials/google/credentials.json
+  mount:
+    - source: /home/guilherme-carvalho/credentials/google/google_cloud.json
+      target: /app/credentials/google/credentials.json
+    - source: /home/guilherme-carvalho/credentials/kaggle/kaggle.json
+      target: /app/credentials/kaggle/kaggle.json
