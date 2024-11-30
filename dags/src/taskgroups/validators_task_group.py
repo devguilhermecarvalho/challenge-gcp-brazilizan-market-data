@@ -4,17 +4,19 @@ from airflow.decorators import task
 from src.validators.bigquery_validator import BigQueryManager
 from src.validators.cloud_storage_validator import CloudStorageValidator
 
-def validator_task_group():
-    with TaskGroup("validators", tooltip="Validator Tasks") as group:
-        @task
-        def validate_buckets_and_datasets():
-            # Validate or create GCP buckets and datasets
-            cloud_storage_validator = CloudStorageValidator(config_path="configs/google_cloud.yml")
-            cloud_storage_validator.validate_or_create_buckets_and_tags()
+class ValidatorsTaskGroup:
+    def __init__(self):
+        self.task_group = self._create_task_group()
 
-            bigquery_manager = BigQueryManager(config_path="configs/google_cloud.yml")
-            bigquery_manager.setup_datasets()
+    def _create_task_group(self):
+        with TaskGroup("validators", tooltip="Validator Tasks") as group:
+            @task(task_group=self)
+            def validate_buckets_and_datasets():
+                
+                cloud_storage_validator = CloudStorageValidator(config_path="configs/google_cloud.yml")
+                cloud_storage_validator.validate_or_create_buckets_and_tags()
 
-        validate_buckets_and_datasets()
+                bigquery_manager = BigQueryManager(config_path="configs/google_cloud.yml")
+                bigquery_manager.setup_datasets()
 
-    return group
+            validate_buckets_and_datasets()
