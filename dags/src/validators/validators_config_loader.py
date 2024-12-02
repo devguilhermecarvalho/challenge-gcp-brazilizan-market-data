@@ -1,7 +1,7 @@
 import yaml
 
 class ConfigLoader:
-    def __init__(self, config_path="configs/google_cloud.yml"):
+    def __init__(self, config_path="dags/src/configs/google_cloud.yml"):
         self.config_path = config_path
         self.config = self._load_config()
 

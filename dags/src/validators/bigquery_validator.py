@@ -1,15 +1,11 @@
 from google.cloud import bigquery
 from dags.src.validators.validators_config_loader import ConfigLoader
-import os
 
 class BigQueryManager:
-    def __init__(self, config_path="configs/google_cloud.yml"):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
-
+    def __init__(self, config_path="dags/src/configs/google_cloud.yml"):
         self.config_loader = ConfigLoader(config_path)
         self.client = bigquery.Client()
         self.default_parameters = self.config_loader.get_default_parameters()
-        # Access bigquery at the root level
         self.bigquery_config = self.config_loader.config.get("bigquery", {})
 
     def setup_datasets(self):

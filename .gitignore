@@ -10,7 +10,7 @@ __pycache__/
 credentials/
 google_cloud.json
 kaggle.json
-
+chatgpt.txt
 
 # Distribution / packaging
 .Python

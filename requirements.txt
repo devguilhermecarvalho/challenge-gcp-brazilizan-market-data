@@ -6,3 +6,5 @@ pyyaml==6.0.2
 dbt-core==1.5.2
 dbt-bigquery==1.5.2
 astro-run-dag==0.2.7
+google-auth
+google-cloud-core

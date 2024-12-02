@@ -3,9 +3,8 @@ from dags.src.validators.validators_config_loader import ConfigLoader
 import os
 
 class CloudStorageValidator:
-    def __init__(self, config_path="configs/google_cloud.yml"):
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "google_cloud.json"
-
+    def __init__(self, config_path="dags/src/configs/google_cloud.yml"):
+        
         self.config_loader = ConfigLoader(config_path)
         self.client = storage.Client()
         self.default_parameters = self.config_loader.get_default_parameters()
