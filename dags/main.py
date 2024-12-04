@@ -1,15 +1,15 @@
 from pendulum import datetime
-from pathlib import Path
+from airflow.decorators import dag
+from airflow.utils.task_group import TaskGroup
+from airflow.operators.empty import EmptyOperator
 
-import os
-import json
-
-from airflow.decorators import dag, task, task_group
-from airflow.models import Connection
-from airflow import settings
-
-from cosmos import DbtTaskGroup, ProjectConfig, ProfileConfig
-from cosmos.profiles import GoogleCloudServiceAccountDictProfileMapping
+from src.tasks.gcp_environment_validator import task_cloud_storage_validator, task_bigquery_validator
+from src.tasks.kaggle_extractor_tasks import (
+    get_kaggle_data_validator_task,
+    extract_kaggle_datasets,
+    kaggle_data_uploader
+)
+from src.tasks.dbt_transform_task import get_dbt_transform_taskgroup
 
 @dag(
     start_date=datetime(2024, 11, 11),
@@ -17,112 +17,44 @@ from cosmos.profiles import GoogleCloudServiceAccountDictProfileMapping
     catchup=False,
 )
 def pipeline_kaggle_extractor():
-    @task_group
-    def validate_buckets_and_datasets():
-        @task
-        def validate_or_create_buckets_and_tags():
-            from src.validators.cloud_storage_validator import CloudStorageValidator
-            config_loader = "dags/src/configs/google_cloud.yml"
-            cloud_storage_validator = CloudStorageValidator(config_path=config_loader)
-            cloud_storage_validator.validate_or_create_buckets_and_tags()
+    """
+    Task Group: Validação do Ambiente do Cloud Storage e BigQuery
+    """
+    with TaskGroup(group_id='gcp_environment_validator') as gcp_environment_validator_task_group:
+        # Chamar as tarefas importadas
+        task1 = task_bigquery_validator()
+        task2 = task_cloud_storage_validator()
 
-        @task
-        def setup_datasets():
-            from src.validators.bigquery_validator import BigQueryManager
-            config_loader = "dags/src/configs/google_cloud.yml"
-            bigquery_manager = BigQueryManager(config_path=config_loader)
-            bigquery_manager.setup_datasets()
+    """
+    Obter a lista de dataset_ids antes de definir as tasks
+    """
+    from src.validators.validators_config_loader import ConfigLoader
 
-        validate_or_create_buckets_and_tags_task = validate_or_create_buckets_and_tags()
-        setup_datasets_task = setup_datasets()
+    config_loader = ConfigLoader(config_path="dags/src/configs/kaggle.yml")
+    kaggle_configs = config_loader.get_kaggle_configs()
+    dataset_ids = [dataset['id'] for dataset in kaggle_configs.get('datasets', [])]
 
-        validate_or_create_buckets_and_tags_task >> setup_datasets_task
+    """
+    Task Group: Extração e Validação do Kaggle
+    """
+    with TaskGroup(group_id='kaggle_extractor') as kaggle_extractor_task_group:
+        kaggle_data_validator = get_kaggle_data_validator_task(dataset_ids)
 
-    @task
-    def extract_kaggle_datasets():
-        from src.validators.validators_config_loader import ConfigLoader
-        from src.endpoints.kaggle_extractor import KaggleDatasetDownloader
+        extract_tasks = extract_kaggle_datasets.expand(dataset_id=dataset_ids)
+        uploader_tasks = kaggle_data_uploader.expand(extracted_data_info=extract_tasks)
 
-        config_loader = ConfigLoader(config_path="dags/src/configs/kaggle.yml")
-        kaggle_configs = config_loader.get_kaggle_configs()
-        dataset_ids = [dataset['id'] for dataset in kaggle_configs.get('datasets', [])]
+        kaggle_task_group_complete = EmptyOperator(task_id='kaggle_task_group_complete')
 
-        # Assegure-se de que as credenciais do Kaggle estão definidas nas variáveis de ambiente
-        if not os.environ.get('KAGGLE_USERNAME') or not os.environ.get('KAGGLE_KEY'):
-            raise ValueError("As credenciais do Kaggle não estão definidas nas variáveis de ambiente.")
+        # Definir dependências
+        kaggle_data_validator >> [extract_tasks, kaggle_task_group_complete]
+        extract_tasks >> uploader_tasks >> kaggle_task_group_complete
 
-        downloader = KaggleDatasetDownloader(config=kaggle_configs)
+    """
+    Task Group: DBT
+    """
+    dbt_transform = get_dbt_transform_taskgroup()
 
-        for dataset_id in dataset_ids:
-            downloader.process_dataset(dataset_id)
-
-    def create_gcp_connection():
-        from airflow.models import Connection
-        from airflow import settings
-        import json
-
-        conn_id = 'google_cloud_default'  # Substitua pelo seu conn_id desejado
-
-        # Verifica se a conexão já existe
-        session = settings.Session()
-        conn_exists = (
-            session.query(Connection)
-            .filter(Connection.conn_id == conn_id)
-            .first()
-        )
-
-        if not conn_exists:
-            # Obtém o caminho para o arquivo de chave a partir da variável de ambiente
-            keyfile_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-            if not keyfile_path:
-                raise ValueError("A variável de ambiente GOOGLE_APPLICATION_CREDENTIALS não está definida.")
-
-            # Carrega o conteúdo do arquivo de chave
-            with open(keyfile_path, 'r') as f:
-                keyfile_dict = json.load(f)
-
-            conn = Connection(
-                conn_id=conn_id,
-                conn_type='google_cloud_platform',
-                extra=json.dumps({
-                    'extra__google_cloud_platform__keyfile_dict': keyfile_dict,
-                    'extra__google_cloud_platform__scope': 'https://www.googleapis.com/auth/cloud-platform',
-                })
-            )
-            session.add(conn)
-            session.commit()
-            session.close()
-        else:
-            session.close()
-
-    # Cria a conexão do GCP programaticamente usando a chave do ENV GOOGLE_APPLICATION_CREDENTIALS
-    create_gcp_connection()
-
-    # Atualize o conn_id para corresponder ao criado
-    profile_config = ProfileConfig(
-        profile_name="default",
-        target_name="dev",
-        profile_mapping=GoogleCloudServiceAccountDictProfileMapping(
-            conn_id="google_cloud_default",  # Deve corresponder ao conn_id usado em create_gcp_connection
-            profile_args={
-                "schema": "your_bigquery_dataset_name",  # Substitua pelo nome do seu dataset no BigQuery
-                "project": "your_gcp_project_id",       # Substitua pelo ID do seu projeto GCP
-            },
-        ),
-    )
-
-    dbt_transform = DbtTaskGroup(
-        group_id="dbt_transform",
-        project_config=ProjectConfig(dbt_project_path=Path(__file__).parent / "dbt_transformations"),
-        profile_config=profile_config,
-        default_args={"owner": "Astro", "retries": 1},
-        operator_args={
-            "dbt_executable_path": "/usr/local/airflow/.local/bin/dbt"
-        }
-    )
-
-    validate_buckets_and_datasets_task_group = validate_buckets_and_datasets()
-
-    validate_buckets_and_datasets_task_group >> extract_kaggle_datasets() >> dbt_transform
+    # Estabelecer as dependências entre os task groups
+    gcp_environment_validator_task_group >> kaggle_extractor_task_group >> dbt_transform
 
 pipeline_kaggle_extractor()
