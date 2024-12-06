@@ -13,3 +13,4 @@ def task_bigquery_validator():
     config_loader = "dags/src/configs/google_cloud.yml"
     bigquery_manager = BigQueryManager(config_path=config_loader)
     bigquery_manager.setup_datasets()
+    

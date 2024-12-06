@@ -1,6 +1,5 @@
 from google.cloud import storage
 from dags.src.validators.validators_config_loader import ConfigLoader
-import os
 
 class CloudStorageValidator:
     def __init__(self, config_path="dags/src/configs/google_cloud.yml"):

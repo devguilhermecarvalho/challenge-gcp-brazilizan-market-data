@@ -3,13 +3,11 @@ from airflow.decorators import dag
 from airflow.utils.task_group import TaskGroup
 from airflow.operators.empty import EmptyOperator
 
-from src.tasks.gcp_environment_validator import task_cloud_storage_validator, task_bigquery_validator
 from src.tasks.kaggle_extractor_tasks import (
     get_kaggle_data_validator_task,
     extract_kaggle_datasets,
     kaggle_data_uploader
 )
-from src.tasks.dbt_transform_task import get_dbt_transform_taskgroup
 
 @dag(
     start_date=datetime(2024, 11, 11),
@@ -21,9 +19,10 @@ def pipeline_kaggle_extractor():
     Task Group: Validação do Ambiente do Cloud Storage e BigQuery
     """
     with TaskGroup(group_id='gcp_environment_validator') as gcp_environment_validator_task_group:
-        # Chamar as tarefas importadas
-        task1 = task_bigquery_validator()
-        task2 = task_cloud_storage_validator()
+        from src.tasks.gcp_environment_validator import task_cloud_storage_validator, task_bigquery_validator
+
+        task1 = task_cloud_storage_validator()
+        task2 = task_bigquery_validator()
 
     """
     Obter a lista de dataset_ids antes de definir as tasks
@@ -52,7 +51,9 @@ def pipeline_kaggle_extractor():
     """
     Task Group: DBT
     """
-    dbt_transform = get_dbt_transform_taskgroup()
+    from src.tasks.dbt_transform_task import DBTBuilder
+    dbt_builder = DBTBuilder()
+    dbt_transform = dbt_builder.get_dbt_transform_taskgroup()
 
     # Estabelecer as dependências entre os task groups
     gcp_environment_validator_task_group >> kaggle_extractor_task_group >> dbt_transform

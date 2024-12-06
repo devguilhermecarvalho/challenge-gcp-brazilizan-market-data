@@ -11,6 +11,8 @@ credentials/
 google_cloud.json
 kaggle.json
 chatgpt.txt
+*.txt
+
 
 # Distribution / packaging
 .Python
